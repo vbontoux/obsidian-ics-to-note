@@ -1,99 +1,95 @@
-import {App, Editor, MarkdownView, Modal, Notice, Plugin} from 'obsidian';
-import {DEFAULT_SETTINGS, MyPluginSettings, SampleSettingTab} from "./settings";
+import { Notice, Plugin, TFile } from "obsidian";
+import { convertIcsCalendar, type IcsCalendar, type IcsAttendee, type IcsEvent } from "ts-ics";
 
-// Remember to rename these classes and interfaces!
-
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
-
+export default class IcsToNotePlugin extends Plugin {
 	async onload() {
-		await this.loadSettings();
-
-		// This creates an icon in the left ribbon.
-		this.addRibbonIcon('dice', 'Sample', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
-
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status bar text');
-
-		// This adds a simple command that can be triggered anywhere
 		this.addCommand({
-			id: 'open-modal-simple',
-			name: 'Open modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
+			id: "import-ics",
+			name: "Import ICS file as notes",
+			callback: () => this.importIcs(),
+		});
+	}
+
+	private async importIcs() {
+		const input = document.createElement("input");
+		input.type = "file";
+		input.accept = ".ics";
+		input.onchange = async () => {
+			const file = input.files?.[0];
+			if (!file) return;
+
+			const text = await file.text();
+			let calendar: IcsCalendar;
+			try {
+				calendar = convertIcsCalendar(undefined, text);
+			} catch (e) {
+				new Notice("Failed to parse ICS file.");
+				return;
 			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'replace-selected',
-			name: 'Replace selected content',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				editor.replaceSelection('Sample editor command');
+
+			const events = calendar.events;
+			if (!events?.length) {
+				new Notice("No events found in ICS file.");
+				return;
 			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-modal-complex',
-			name: 'Open modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
 
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-				return false;
+			for (const event of events) {
+				await this.createNote(event);
 			}
-		});
 
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			new Notice("Click");
-		});
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
-
+			new Notice(`Created ${events.length} note(s) from ICS.`);
+		};
+		input.click();
 	}
 
-	onunload() {
+	private formatDate(d: Date): string {
+		return d.toISOString().replace("T", " ").slice(0, 16);
 	}
 
-	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<MyPluginSettings>);
+	private formatPerson(p: { name?: string; email: string }): string {
+		return p.name ? `${p.name} <${p.email}>` : p.email;
 	}
 
-	async saveSettings() {
-		await this.saveData(this.settings);
-	}
-}
-
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
+	private formatAttendee(a: IcsAttendee): string {
+		const status = a.partstat ? ` (${a.partstat})` : "";
+		return `${this.formatPerson(a)}${status}`;
 	}
 
-	onOpen() {
-		let {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
+	private async createNote(event: IcsEvent) {
+		const title = (event.summary ?? "Untitled Event").replace(/[\\/:*?"<>|]/g, "-");
+		const start = event.start?.date ? this.formatDate(new Date(event.start.date)) : "";
+		const end = event.end?.date ? this.formatDate(new Date(event.end.date)) : "";
 
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
+		const lines = ["---", `title: "${title}"`];
+		if (start) lines.push(`start: "${start}"`);
+		if (end) lines.push(`end: "${end}"`);
+		if (event.location) lines.push(`location: "${event.location}"`);
+		if (event.status) lines.push(`status: "${event.status}"`);
+		if (event.organizer) lines.push(`organizer: "${this.formatPerson(event.organizer)}"`);
+		lines.push("---");
+
+		const parts = [lines.join("\n"), ""];
+		const hasAttendees = event.organizer || event.attendees?.length;
+		if (hasAttendees) {
+			parts.push("## Attendees", "");
+			if (event.organizer) {
+				parts.push(`- [ ] ${this.formatPerson(event.organizer)} (Organizer)`);
+			}
+			for (const a of event.attendees ?? []) {
+				parts.push(`- [ ] ${this.formatAttendee(a)}`);
+			}
+			parts.push("");
+		}
+		if (event.description) parts.push(event.description);
+
+		const content = parts.join("\n");
+		const fileName = `${title}.md`;
+
+		const existing = this.app.vault.getAbstractFileByPath(fileName);
+		if (existing instanceof TFile) {
+			await this.app.vault.modify(existing, content);
+		} else {
+			await this.app.vault.create(fileName, content);
+		}
 	}
 }
