@@ -60,12 +60,16 @@ export default class IcsToNotePlugin extends Plugin {
 		const start = event.start?.date ? this.formatDate(new Date(event.start.date)) : "";
 		const end = event.end?.date ? this.formatDate(new Date(event.end.date)) : "";
 
+		const date = event.start?.date ? new Date(event.start.date).toISOString().slice(0, 10) : "";
+
 		const lines = ["---", `title: "${title}"`];
+		if (date) lines.push(`date: ${date}`);
 		if (start) lines.push(`start: "${start}"`);
 		if (end) lines.push(`end: "${end}"`);
 		if (event.location) lines.push(`location: "${event.location}"`);
 		if (event.status) lines.push(`status: "${event.status}"`);
 		if (event.organizer) lines.push(`organizer: "${this.formatPerson(event.organizer)}"`);
+		lines.push("tags:\n  - type/meeting");
 		lines.push("---");
 
 		const parts = [lines.join("\n"), ""];
